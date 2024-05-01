@@ -288,8 +288,8 @@ int main() {
     Sphere S_2(Vector(20, 0, 0), 10, Vector(255, 67, 189), false, true);
     Sphere S_3(Vector(20, 0, 0), 9.5, Vector(255, 67, 189), false, true);
     S_3.inside = true;
-    Sphere wall_1(Vector(0, 1000, 0), 940, Vector(255, 0, 0), false, false); // red wall
-    Sphere wall_2(Vector(0, 0, 1000), 940, Vector(0, 255, 0), false, false); // green wall
+    Sphere wall_1(Vector(0, 1000, 0), 940, Vector(0, 0, 0), false, false); // red wall
+    Sphere wall_2(Vector(0, 0, 1000), 940, Vector(0, 0, 0), false, false); // green wall
     Sphere wall_5(Vector(1000, 0, 0), 940, Vector(0, 255, 255), false, false); //side left
     Sphere wall_6(Vector(-1000, 0, 0), 940, Vector(255, 215, 171), false, false); //side right
     Sphere wall_3(Vector(0, -1000, 0), 990, Vector(0, 0, 255), false, false); // blue wall
@@ -306,13 +306,13 @@ int main() {
             Vector color_shadow;
 
             Vector P, N;
-            Vector P_shadow, N_shadow;
+            Vector P_shadow, N_shadow;5
             // Camera ray initialization
             Vector pixel_coord(Q.data[0] + j + 0.5 - W / 2, Q.data[1] + H - i - 1 + 0.5 - H / 2, Q.data[2] - W / (2 * tan(alpha * M_PI / 360)));
             Vector ray_direction = pixel_coord - Q;
             ray_direction.normalize();
             Ray ray_camera(Q, ray_direction);
-            int n_rays = 1000;
+            int n_rays = 10;
             Intersection intersec_wall = main_scene.scene_intersect(ray_camera, color_wall, P, N);
             for (int i = 0; i < n_rays; i++) {
                 Intersection intersec_wall = main_scene.scene_intersect(ray_camera, color_wall, P, N);
@@ -332,6 +332,8 @@ int main() {
             double epsilon = 1;
             Ray shadow_ray(P + epsilon * N, w_i);
             int VpS = 1;
+
+            //shadowing
             Intersection intersec_shadow = main_scene.scene_intersect(shadow_ray, color_shadow, P_shadow, N_shadow);
 
             if (((P_shadow - P).norm2() <= (light_source - P).norm2())) {
