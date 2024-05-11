@@ -7,6 +7,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include <iostream>
+#include <random>
 #include <math.h>
 #include <cmath>
 # define M_PI           3.14159265358979323846  /* pi */
@@ -58,7 +59,25 @@ double dot(const Vector& a, const Vector& b) {
 Vector cross(const Vector& a, const Vector& b) {
     return Vector(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]);
 }
+//from lecture notes
+static std::default_random_engine engine(10); // random s e e d = 10
+static std::uniform_real_distribution<double> uniform(0, 1);
 
+void boxMuller(double stdev, double& x, double& y) {
+    double r1 = uniform(engine);
+    double r2 = uniform(engine);
+    x = sqrt(-2 * log(r1)) * cos(2 * M_PI * r2) * stdev;
+    y = sqrt(-2 * log(r1)) * sin(2 * M_PI * r2) * stdev;
+}
+Vector random_cos() {
+    double r1 = ((double)rand() / (double)RAND_MAX); //from https://stackoverflow.com/questions/1340729/how-do-you-generate-a-random-double-uniformly-distributed-between-0-and-1-from-c
+    double r2 = ((double)rand() / (double)RAND_MAX);
+    double x = std::cos(2 * M_PI * r1) * sqrt(1 - r2);
+    double y = std::sin(2 * M_PI * r1) * sqrt(1 - r2);
+    double z = sqrt(r2);
+    return Vector(x, y, z);
+
+}
 class Ray {
 public:
     Ray(Vector origin, Vector unit_direction) {
@@ -156,15 +175,7 @@ public:
     std::vector<Sphere> objects;
 
 
-    Vector random_cos() {
-        double r1 = ((double)rand() / (double)RAND_MAX); //from https://stackoverflow.com/questions/1340729/how-do-you-generate-a-random-double-uniformly-distributed-between-0-and-1-from-c
-        double r2 = ((double)rand() / (double)RAND_MAX);
-        double x = std::cos(2 * M_PI * r1) * sqrt(1 - r2);
-        double y = std::sin(2 * M_PI * r1) * sqrt(1 - r2);
-        double z = sqrt(r2);
-        return Vector(x, y, z);
 
-    }
     Vector getColor(Ray& ray, int ray_depth, Sphere& sphere, Vector& P, Vector& N, Vector& w_i) {
 
         Vector color;
@@ -250,6 +261,10 @@ public:
 
         final_color = light;
         Vector ray_dir = random_cos();
+        double x, y;
+        //boxMuller(0.5, x, y);
+        //ray_dir.data[0] += x;
+        //ray_dir.data[1] += y;
         Ray randomRay(P + eps * N, ray_dir);
         Vector color_random;
         Vector P_rand, N_rand;
@@ -299,14 +314,20 @@ int main() {
             Vector P_shadow, N_shadow;
             // Camera ray initialization
             Vector pixel_coord(Q.data[0] + j + 0.5 - W / 2, Q.data[1] + H - i - 1 + 0.5 - H / 2, Q.data[2] - W / (2 * tan(alpha * M_PI / 360)));
-            Vector ray_direction = pixel_coord - Q;
-            ray_direction.normalize();
-            Ray ray_camera(Q, ray_direction);
+
+
+            double x, y;
             int n_rays = 1000;
             double r = 0.;
             double g = 0.;
             double b = 0.;
             for (int counter = 0; counter < n_rays; counter++) {
+                Vector ray_direction = pixel_coord - Q;
+                boxMuller(0.5, x, y);
+                ray_direction.data[0] += x;
+                ray_direction.data[1] += y;
+                ray_direction.normalize();
+                Ray ray_camera(Q, ray_direction);
                 Vector color_inter;
                 Intersection intersec_wall = main_scene.scene_intersect(ray_camera, color_wall, P, N);
                 color_inter = main_scene.getColor(ray_camera, 5, intersec_wall.S, P, N, ray_direction);
@@ -314,7 +335,6 @@ int main() {
                 g += color_inter.data[1];
                 b += color_inter.data[2];
             }
-            n_rays += 1;
             color_wall.data[0] = r / (double)n_rays;
             color_wall.data[1] = g / (double)n_rays;
             color_wall.data[2] = b / (double)n_rays;
