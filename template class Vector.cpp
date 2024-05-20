@@ -1,12 +1,13 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <vector>
-
+#include <chrono>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include <iostream>
 
+#include<list>
 #include <string>
 #include <stdio.h>
 #include <algorithm>
@@ -97,22 +98,26 @@ Vector random_cos(const Vector& N) {
     return result;
 
 }
+
 class Geometry;
 class Intersection {
 public:
-    Intersection(double t_inter, const Geometry* S_inter, bool does_intersec) {
+    Intersection(double t_inter, const Geometry* S_inter, bool does_intersec, Vector& P1, Vector& N1) {
         t = t_inter;
         S = S_inter;
         intersec = does_intersec;
+        P = P1;
+        N = N1;
     };
     Intersection() : t(0), S(nullptr), intersec(false) {};
 
     const Geometry* S;
     double t;
+    Vector P;
+    Vector N;
     bool intersec;
 
 };
-
 class Ray {
 public:
     Ray(Vector origin, Vector unit_direction) {
@@ -136,39 +141,45 @@ public:
 
     virtual ~Geometry() {}
 };
-
-class Sphere : public Geometry {
+class BoundingBox {
 public:
-    Sphere(const Vector& center, double radius, const Vector& albedo, bool mirror_status, bool refract_status)
-        : sphere_radius(radius), Geometry(albedo, mirror_status, refract_status, center) {}
-    Sphere() : Geometry(Vector(1, 1, 1), false, false, Vector(0, 0, 0)), sphere_radius(1.0) {
-        // Initializes a default sphere with radius 1 and white albedo at origin
-    }
-    Intersection intersect(const Ray& ray) const override {
+    BoundingBox(const Vector& min, const Vector& max) : min(min), max(max) {}
+    BoundingBox() : min(0), max(1e100) {};
 
-        Vector u = ray.ray_unit_direction;
+    Intersection intersect(const Ray& ray) {
         Vector O = ray.ray_origin;
-        double t = 1e100;
-        Vector C = sphere_center;
-        Vector O_minus_C = O - C;
-        double discriminant = dot(u, O_minus_C) * dot(u, O_minus_C) - O_minus_C.norm2() + (sphere_radius) * (sphere_radius);
-        if (discriminant >= 0) {
-            double t1 = dot(u, C - O) - sqrt(discriminant);
-            double t2 = dot(u, C - O) + sqrt(discriminant);
-            if (t2 >= 0) {
-                if (t1 >= 0) {
-                    t = t1;
-                }
-                else {
-                    t = t2;
-                }
-            }
+        Vector u = ray.ray_unit_direction;
+        Vector Pf, Nf;
 
+        double t0x = (min[0] - O[0]) / u[0];
+        double t1x = (max[0] - O[0]) / u[0];
+
+        double t0y = (min[1] - O[1]) / u[1];
+        double t1y = (max[1] - O[1]) / u[1];
+
+        double t0z = (min[2] - O[2]) / u[2];
+        double t1z = (max[2] - O[2]) / u[2];
+
+        double tmin = std::max(std::max(std::min(t0x, t1x), std::min(t0y, t1y)), std::min(t0z, t1z));
+        double tmax = std::min(std::min(std::max(t0x, t1x), std::max(t0y, t1y)), std::max(t0z, t1z));
+
+        if (tmax < 0 || tmin > tmax) {
+            return Intersection(0., nullptr, false, Pf, Nf);
         }
-        return Intersection(t, this, true);
+        return Intersection(tmin, nullptr, true, Pf, Nf);
     }
-    double sphere_radius;
+    Vector min;
+    Vector max;
+};
 
+class Node {
+public:
+    Node(Node* left = nullptr, Node* right = nullptr) : left(left), right(right) {};
+    BoundingBox bound;
+    int starting_triangle;
+    int ending_triangle;
+    Node* left;
+    Node* right;
 };
 class TriangleIndices {
 public:
@@ -180,10 +191,23 @@ public:
     int group;       // face group
 };
 
-class TriangleMesh {
+class TriangleMesh : public Geometry {
 public:
-    ~TriangleMesh() {}
-    TriangleMesh() {};
+    ~TriangleMesh() {
+        node = new Node();
+    }
+    TriangleMesh() : Geometry(Vector(255., 0., 0.), false, false, Vector(-5000., 0., 0.)) {};
+    void scale_mesh(double scale) {
+        for (int i = 0; i < vertices.size(); i++) {
+            vertices[i] = vertices[i] * scale;
+        }
+    };
+
+    void translate_mesh(Vector translation) {
+        for (int i = 0; i < vertices.size(); i++) {
+            vertices[i] = vertices[i] + translation;
+        }
+    };
 
     void readOBJ(const char* obj) {
 
@@ -367,24 +391,198 @@ public:
 
     }
 
-    double intersect(Ray& ray, Vector& N) {
-        Vector O = ray.ray_origin;
-        Vector u = ray.ray_unit_direction;
-        double t_min = 10e100;
-        double t;
-        for (int i = 0; i < vertexcolors.size(); i++) {
-            t = dot(vertices[i] - O, N) / dot(u, N);
-            if (t < t_min) {
-                t_min = t;
+    void helper_bvh(Node* node, int& starting_triangle, int& ending_triangle) {
+        //----based on lecture notes
+        node->bound = compute_bounding_box(starting_triangle, ending_triangle);
+
+        node->starting_triangle = starting_triangle;
+        node->ending_triangle = ending_triangle;
+        Vector diag = node->bound.max - node->bound.min;
+        Vector middle_diag = node->bound.min + diag * 0.5;
+        int longest_axis;
+        if (diag.data[0] > diag.data[1]) {
+            longest_axis = (diag.data[0] > diag.data[2]) ? 0 : 2;
+        }
+        else {
+            longest_axis = (diag.data[1] > diag.data[2]) ? 1 : 2;
+        }
+        int pivot_index = starting_triangle;
+        TriangleIndices triangle;
+        Vector barycenter;
+        for (int i = starting_triangle; i < ending_triangle; ++i) {
+            triangle = indices[i];
+            barycenter = (vertices[triangle.vtxi] + vertices[triangle.vtxj] + vertices[triangle.vtxk]) / 3;
+            if (barycenter[longest_axis] < middle_diag[longest_axis]) {
+                std::swap(indices[i], indices[pivot_index]);
+                pivot_index++;
             }
         }
-        return t_min;
+        if (pivot_index <= starting_triangle || pivot_index >= ending_triangle - 1 || ending_triangle - starting_triangle < 5) {
+
+            return;
+        }
+        //recursive call
+        node->left = new Node();
+        node->right = new Node();
+        helper_bvh(node->left, starting_triangle, pivot_index);
+        helper_bvh(node->right, pivot_index, ending_triangle);
+    };
+
+    void main_bvh() {
+        int start = 0;
+        int stop = indices.size();
+        node = new Node();
+        helper_bvh(node, start, stop);
+    };
+
+    BoundingBox compute_bounding_box(int& starting_triangle, int& ending_triangle) const {
+        double max_x = -DBL_MAX;
+        double max_y = -DBL_MAX;
+        double max_z = -DBL_MAX;
+
+        double min_x = DBL_MAX;
+        double min_y = DBL_MAX;
+        double min_z = DBL_MAX;
+
+        for (int i = starting_triangle; i < ending_triangle; ++i) {
+            TriangleIndices triangle = indices[i];
+
+            Vector A = vertices[triangle.vtxi];
+            Vector B = vertices[triangle.vtxj];
+            Vector C = vertices[triangle.vtxk];
+
+            min_x = std::min(min_x, std::min(A[0], std::min(B[0], C[0])));
+            min_y = std::min(min_y, std::min(A[1], std::min(B[1], C[1])));
+            min_z = std::min(min_z, std::min(A[2], std::min(B[2], C[2])));
+
+            max_x = std::max(max_x, std::max(A[0], std::max(B[0], C[0])));
+            max_y = std::max(max_y, std::max(A[1], std::max(B[1], C[1])));
+            max_z = std::max(max_z, std::max(A[2], std::max(B[2], C[2])));
+        }
+
+        return BoundingBox(Vector(min_x, min_y, min_z), Vector(max_x, max_y, max_z));
+    };
+
+    Intersection triangle_intersection(const TriangleIndices& triangle, const Ray& ray) const {
+        Vector A = vertices[triangle.vtxi];
+        Vector B = vertices[triangle.vtxj];
+        Vector C = vertices[triangle.vtxk];
+
+        Vector e1 = B - A;
+        Vector e2 = C - A;
+
+        Vector N = cross(e1, e2);
+        Vector O = ray.ray_origin;
+        Vector u = ray.ray_unit_direction;
+
+        Vector Pf, Nf;
+        double beta = dot(e2, cross((A - O), u)) / dot(u, N);
+        double gamma = -(dot(e1, cross(A - O, u)) / dot(u, N));
+        double alpha = 1 - beta - gamma;
+        double t = dot(A - O, N) / dot(u, N);
+
+        bool accepted = (0 <= alpha) && (alpha <= 1) && (0 <= beta) && (beta <= 1) && (0 <= gamma) && (gamma <= 1);
+        if (t > 0 && accepted) {
+            Vector P = O + u * t;
+            Vector N1 = normals[triangle.ni] * alpha + normals[triangle.nj] * beta + normals[triangle.nk] * gamma;
+            N1.normalize();
+            return Intersection(t, this, true, P, N1);
+        }
+
+        return Intersection(t, this, false, Pf, Nf);
+    }
+
+    Intersection intersect(const Ray& ray) const override {
+
+        //---- based on lecture notes
+        std::list<Node*> nodes_to_visit;
+        nodes_to_visit.push_front(node);
+        double best_inter_distance = 1e200;
+
+        Vector Pf, Nf;
+        Intersection closest_intersection(0., this, false, Pf, Nf);
+        double inter_distance;
+
+        while (!nodes_to_visit.empty()) {
+            Node* curNode = nodes_to_visit.back();
+
+            nodes_to_visit.pop_back();
+            if (curNode->left) {
+                Intersection leftIntersection = curNode->left->bound.intersect(ray);
+                if (leftIntersection.intersec) {
+                    if (leftIntersection.t < best_inter_distance) {
+                        nodes_to_visit.push_back(curNode->left);
+                    }
+                }
+                Intersection rightIntersection = curNode->right->bound.intersect(ray);
+                if (rightIntersection.intersec) {
+                    if (rightIntersection.t < best_inter_distance) {
+                        nodes_to_visit.push_back(curNode->right);
+                    }
+                }
+            }
+            else { //check all triangles in the interval
+                for (int i = curNode->starting_triangle; i < curNode->ending_triangle; i++) {
+                    const TriangleIndices triangle = indices[i];
+                    const Intersection intersection = triangle_intersection(triangle, ray);
+                    if (intersection.intersec) {
+                        double inter_distance = (intersection.P - ray.ray_origin).norm2();
+
+                        //std::cout << ray.ray_origin.data[0] << ray.ray_origin.data[1] << ray.ray_origin.data[2]<< "\n";
+                        if (inter_distance < best_inter_distance) {
+                            best_inter_distance = inter_distance;
+                            closest_intersection = intersection;
+                        }
+                    }
+                }
+            }
+        }
+        return closest_intersection;
     }
     std::vector<TriangleIndices> indices;
     std::vector<Vector> vertices;
     std::vector<Vector> normals;
     std::vector<Vector> uvs;
     std::vector<Vector> vertexcolors;
+    Node* node;
+
+};
+
+
+
+
+class Sphere : public Geometry {
+public:
+    Sphere(const Vector& center, double radius, const Vector& albedo, bool mirror_status, bool refract_status)
+        : sphere_radius(radius), Geometry(albedo, mirror_status, refract_status, center) {}
+    Sphere() : Geometry(Vector(1, 1, 1), false, false, Vector(0, 0, 0)), sphere_radius(1.0) {
+        // Initializes a default sphere with radius 1 and white albedo at origin
+    }
+    Intersection intersect(const Ray& ray) const override {
+
+        Vector u = ray.ray_unit_direction;
+        Vector O = ray.ray_origin;
+        double t = 0;
+        Vector C = sphere_center;
+        Vector O_minus_C = O - C;
+
+        Vector Pf, Nf;
+        double discriminant = dot(u, O_minus_C) * dot(u, O_minus_C) - O_minus_C.norm2() + (sphere_radius) * (sphere_radius);
+        if (discriminant >= 0) {
+            double t1 = dot(u, C - O) - sqrt(discriminant);
+            double t2 = dot(u, C - O) + sqrt(discriminant);
+            if (t2 >= 0) {
+                t = t1 >= 0 ? t1 : t2;
+                Vector P = O + u * t;
+                Vector N = P - C;
+                N.normalize();
+                return Intersection(t, this, true, P, N);
+            }
+
+        }
+        return Intersection(t, this, false, Pf, Nf);
+    }
+    double sphere_radius;
 
 };
 
@@ -397,28 +595,25 @@ public:
         Vector O = ray.ray_origin;
         Vector u = ray.ray_unit_direction;
         double t_min = 1e100;
-        Geometry* S_intersec;
+        double dist_m = DBL_MAX;
         Vector C;
-        Vector N1 = N;
         Intersection inter;
         bool intersects_mesh = false;
         for (auto& ball : objects) {
             Intersection inter1 = ball->intersect(ray);
-            t = inter1.t;
-            C = ball->sphere_center;
-            if (t < t_min) {
-                P = O + t * u;
-                N = (P - C) / (P - C).norm();
-                t_min = t;
-                inter.t = t;
-                inter.S = ball;
-                inter.intersec = true;
+            if (!inter1.intersec)
+                continue;
+            double dist = (inter1.P - ray.ray_origin).norm2();
+            if (dist < dist_m) {
+                dist_m = dist;
+                P = inter1.P;
+                N = inter1.N;
+                inter = inter1;
             }
         }
         return inter;
     };
     std::vector<Geometry*> objects;
-    std::vector<TriangleMesh> mesh_objects; //if i wanna add multiple cats
 
 
 
@@ -515,7 +710,7 @@ public:
         //can modify get color, but i dont want to add more parameters and make it uglier
         Intersection intersec_random = scene_intersect(randomRay, P_rand, N_rand);
         Vector mult_color = intersec_random.S->geometry_albedo;
-
+        //Vector mult_color = getColor(randomRay, ray_depth - 1, N_rand, P_rand,ray_dir);
         final_color.data[0] += sphere->geometry_albedo.data[0] * mult_color.data[0];
         final_color.data[1] += sphere->geometry_albedo.data[1] * mult_color.data[1];
         final_color.data[2] += sphere->geometry_albedo.data[2] * mult_color.data[2];
@@ -529,14 +724,14 @@ int main() {
     double f = 60.0;
     double alpha = 60.0;
 
-    Sphere* S = new Sphere(Vector(-20, 0, 0), 10, Vector(255, 67, 189), true, false);
+    Sphere* S = new Sphere(Vector(-20, -5, 10), 5, Vector(255, 67, 189), true, false);
 
-    Sphere* S_1 = new Sphere(Vector(0, 0, 0), 10, Vector(255, 67, 189), false, true);
+    Sphere* S_1 = new Sphere(Vector(20, -5, 10), 5, Vector(255, 67, 189), false, true);
 
-    Sphere* S_2 = new Sphere(Vector(20, 0, 0), 10, Vector(255, 67, 189), false, true);
-    Sphere* S_3 = new Sphere(Vector(20, 0, 0), 9.5, Vector(255, 67, 189), false, true);
+    Sphere* S_2 = new Sphere(Vector(0, -5, 10), 5, Vector(255, 67, 189), false, true);
+    Sphere* S_3 = new Sphere(Vector(0, -5, 10), 4.7, Vector(255, 67, 189), false, true);
     S_3->inside = true;
-    std::vector<Geometry*> walls = {
+    std::vector<Geometry*> objects = {
         new Sphere(Vector(0, 1000, 0), 940, Vector(255, 0, 255), false, false), // red wall
         new Sphere(Vector(0, 0, 1000), 940, Vector(0, 255, 0), false, false), // green wall
         new Sphere(Vector(1000, 0, 0), 940, Vector(0, 255, 255), false, false), //side left
@@ -548,13 +743,23 @@ int main() {
         S_2,
         S_3
     };
-    TriangleIndices triangle_test();
-    Scene main_scene(walls);
+    TriangleMesh* cat = new TriangleMesh();
+
+    cat->readOBJ("./cat.obj");
+    cat->scale_mesh(0.6);
+    cat->translate_mesh(Vector(0, -10, 0));
+    cat->main_bvh();
+    objects.push_back(cat);
+
+    Scene main_scene(objects);
 
     Vector light_source(-10, 20, 40); // light source 
 
     Vector P_shadow, N_shadow, color_shadow;
     std::vector<unsigned char> image(W * H * 3, 0);
+
+    auto start_time = std::chrono::high_resolution_clock::now();
+#pragma omp parallel for schedule(dynamic, 1)
     for (int i = 0; i < H; i++) {
         for (int j = 0; j < W; j++) {
             Vector color_wall(0., 0., 0.);
@@ -567,7 +772,7 @@ int main() {
 
 
             double x, y;
-            int n_rays = 10;
+            int n_rays = 1000;
             double r = 0.;
             double g = 0.;
             double b = 0.;
@@ -581,7 +786,7 @@ int main() {
                 Vector color_inter;
                 Intersection intersec_wall = main_scene.scene_intersect(ray_camera, P, N);
 
-                color_inter = main_scene.getColor(ray_camera, 5, P, N, ray_direction);
+                color_inter = main_scene.getColor(ray_camera, 2, P, N, ray_direction);
                 r += color_inter.data[0];
                 g += color_inter.data[1];
                 b += color_inter.data[2];
@@ -599,6 +804,11 @@ int main() {
 
         }
     }
+    auto finish_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::
+        chrono::seconds>(finish_time - start_time);
+
+    printf("Rendered in %ld seconds\n", duration.count());
     stbi_write_png("image.png", W, H, 3, &image[0], 0);
 
     return 0;
