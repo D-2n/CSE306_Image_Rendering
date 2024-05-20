@@ -97,6 +97,22 @@ Vector random_cos(const Vector& N) {
     return result;
 
 }
+class Geometry;
+class Intersection {
+public:
+    Intersection(double t_inter, const Geometry* S_inter, bool does_intersec) {
+        t = t_inter;
+        S = S_inter;
+        intersec = does_intersec;
+    };
+    Intersection() : t(0), S(nullptr), intersec(false) {};
+
+    const Geometry* S;
+    double t;
+    bool intersec;
+
+};
+
 class Ray {
 public:
     Ray(Vector origin, Vector unit_direction) {
@@ -109,9 +125,14 @@ public:
 class Geometry {
 public:
     Vector geometry_albedo;
-    Geometry(const Vector& albedo) : geometry_albedo(albedo) {};
-    Geometry() : geometry_albedo(Vector(0., 0., 0.)) {};
-    virtual double intersect(const Ray& ray) = 0;
+    bool mirror;
+    bool refrac;
+    Vector sphere_center;
+    bool inside; // single-case use, so manual trigger
+    Geometry(const Vector& albedo, bool mirror, bool refrac, const Vector& center) : geometry_albedo(albedo), mirror(mirror), refrac(refrac), sphere_center(center) {};
+    Geometry() : geometry_albedo(Vector(0., 0., 0.)), mirror(false), refrac(false), sphere_center(Vector(0., 0., 0.)) {};
+
+    virtual Intersection intersect(const Ray& ray) const = 0;
 
     virtual ~Geometry() {}
 };
@@ -119,12 +140,11 @@ public:
 class Sphere : public Geometry {
 public:
     Sphere(const Vector& center, double radius, const Vector& albedo, bool mirror_status, bool refract_status)
-        : sphere_center(center), sphere_radius(radius), Geometry(albedo),
-        mirror(mirror_status), refrac(refract_status) {}
-    Sphere() : Geometry(Vector(1, 1, 1)), sphere_center(Vector(0, 0, 0)), sphere_radius(1.0) {
+        : sphere_radius(radius), Geometry(albedo, mirror_status, refract_status, center) {}
+    Sphere() : Geometry(Vector(1, 1, 1), false, false, Vector(0, 0, 0)), sphere_radius(1.0) {
         // Initializes a default sphere with radius 1 and white albedo at origin
     }
-    virtual double intersect(const Ray& ray) {
+    Intersection intersect(const Ray& ray) const override {
 
         Vector u = ray.ray_unit_direction;
         Vector O = ray.ray_origin;
@@ -145,13 +165,9 @@ public:
             }
 
         }
-        return t;
+        return Intersection(t, this, true);
     }
-    Vector sphere_center;
     double sphere_radius;
-    bool mirror;
-    bool refrac;
-    bool inside = false;
 
 };
 class TriangleIndices {
@@ -356,7 +372,6 @@ public:
         Vector u = ray.ray_unit_direction;
         double t_min = 10e100;
         double t;
-        std::cout << vertexcolors.size();
         for (int i = 0; i < vertexcolors.size(); i++) {
             t = dot(vertices[i] - O, N) / dot(u, N);
             if (t < t_min) {
@@ -372,87 +387,60 @@ public:
     std::vector<Vector> vertexcolors;
 
 };
-class Intersection {
-public:
-    Intersection(double t_inter, Sphere S_inter, bool does_intersec, bool intersects_mesh) {
-        t = t_inter;
-        S = S_inter;
-        intersec = does_intersec;
-        intersec_mesh = intersects_mesh;
-    };
 
-    Sphere S;
-    double t;
-    bool intersec;
-    bool intersec_mesh;
-
-};
 class Scene {
 public:
-    Scene(Sphere spheres[], int size) {
-        for (int i = 0; i < size; i++) {
-            objects.push_back(spheres[i]);
-        }
-        TriangleMesh cat;
-        cat.readOBJ("cat.obj");
-        mesh_objects.push_back(cat);
+    Scene(std::vector<Geometry*> spheres) : objects(spheres) {}
 
-    }
-    Intersection scene_intersect(Ray& ray, Vector& color_wall, Vector& P, Vector& N) const {
+    Intersection scene_intersect(Ray& ray, Vector& P, Vector& N) const {
         double t;
         Vector O = ray.ray_origin;
         Vector u = ray.ray_unit_direction;
         double t_min = 1e100;
-        Sphere S_intersec;
+        Geometry* S_intersec;
         Vector C;
         Vector N1 = N;
+        Intersection inter;
         bool intersects_mesh = false;
-        for (Sphere ball : objects) {
-            t = ball.intersect(ray);
-            C = ball.sphere_center;
+        for (auto& ball : objects) {
+            Intersection inter1 = ball->intersect(ray);
+            t = inter1.t;
+            C = ball->sphere_center;
             if (t < t_min) {
                 P = O + t * u;
                 N = (P - C) / (P - C).norm();
                 t_min = t;
-                S_intersec = ball;
+                inter.t = t;
+                inter.S = ball;
+                inter.intersec = true;
             }
         }
-        /*
-        for (TriangleMesh mesh : mesh_objects) {
-            t = mesh.intersect(ray, N1);
-            if (t < t_min) {
-                P = O + t * u;
-                N = (P - C) / (P - C).norm();
-                t_min = t;
-                intersects_mesh = true;
-            }
-        }
-        */
-        return Intersection(t_min, S_intersec, true, intersects_mesh);
+        return inter;
     };
-    std::vector<Sphere> objects;
+    std::vector<Geometry*> objects;
     std::vector<TriangleMesh> mesh_objects; //if i wanna add multiple cats
 
 
 
-    Vector getColor(Ray& ray, int ray_depth, Sphere& sphere, Vector& P, Vector& N, Vector& w_i) {
+    Vector getColor(Ray& ray, int ray_depth, Vector& P, Vector& N, Vector& w_i) {
 
         Vector color;
-        Vector color_wall;
         Vector source(-10, 20, 40);
-        if (ray_depth < 0) {
-            return Vector(255., 0., 0.);
+        Intersection main_inter = scene_intersect(ray, P, N);
+        if (ray_depth < 0 || !main_inter.intersec) {
+            return Vector(0., 255., 0.);
         }
-        if (sphere.mirror) {
+        const Geometry* sphere = main_inter.S;
+        //------------------ Sphere part
+        if (sphere->mirror) {
             Vector w_r = w_i - (2 * dot(w_i, N) * N);
             w_r.normalize();
             Ray reflected_ray(P + 1e-8 * N, w_r);
-            Intersection intersec = scene_intersect(reflected_ray, color, P, N);
-            return getColor(reflected_ray, ray_depth - 1, intersec.S, P, N, w_r);
+            return getColor(reflected_ray, ray_depth - 1, P, N, w_r);
         }
         else {
-            if (sphere.refrac) {
-                N = (sphere.inside) ? -1 * N : N;
+            if (sphere->refrac) {
+                N = (sphere->inside) ? -1 * N : N;
                 double n1, n2;
                 Vector N1;
                 n1 = (dot(w_i, N) > 0) ? 1.5 : 1;
@@ -464,8 +452,7 @@ public:
                     Vector w_r = w_i - (2 * dot(w_i, N) * N);
                     w_r.normalize();
                     Ray reflected_ray(P + 0.0001 * N, w_r);
-                    Intersection intersec = scene_intersect(reflected_ray, color, P, N);
-                    return getColor(reflected_ray, ray_depth - 1, intersec.S, P, N, w_r);
+                    return getColor(reflected_ray, ray_depth - 1, P, N, w_r);
                 }
                 else {
                     double k0 = (std::pow(n1 - n2, 2)) / (std::pow(n1 + n2, 2));
@@ -475,8 +462,7 @@ public:
                         Vector w_r = w_i - (2 * dot(w_i, N) * N);
                         w_r.normalize();
                         Ray reflected_ray(P + 0.0001 * N, w_r);
-                        Intersection intersec = scene_intersect(reflected_ray, color, P, N);
-                        return getColor(reflected_ray, ray_depth - 1, intersec.S, P, N, w_r);
+                        return getColor(reflected_ray, ray_depth - 1, P, N, w_r);
                     }
                     else {
                         N = N1;
@@ -487,14 +473,14 @@ public:
 
                         Ray ray_ref(P - 0.001 * N, w_t);
 
-                        Intersection intersec = scene_intersect(ray_ref, color, P, N);
-                        return getColor(ray_ref, ray_depth - 1, intersec.S, P, N, w_t);
+                        return getColor(ray_ref, ray_depth - 1, P, N, w_t);
                     }
                 }
             }
 
         }
-        //-------------------
+
+        //------------------- Common part
         Vector final_color;
 
         double eps = 1E-8;
@@ -509,12 +495,12 @@ public:
         double Nw_i = std::max(0., dot(N, omega_i));
         double intensity = 2.1e10;
 
-        Intersection intersec_shadow = scene_intersect(shadow_ray, color_shadow, P_shadow, N_shadow);
+        Intersection intersec_shadow = scene_intersect(shadow_ray, P_shadow, N_shadow);
 
         if (((P_shadow - P).norm2() <= (source - P).norm2())) {
             VpS = 0;
         }
-        Vector light = sphere.geometry_albedo;
+        Vector light = sphere->geometry_albedo;
         light.normalize();
         light =
             intensity / (4 * M_PI * d * d) * (light / M_PI) * VpS * Nw_i;
@@ -524,13 +510,15 @@ public:
         Ray randomRay(P + eps * N, ray_dir);
         Vector color_random;
         Vector P_rand, N_rand;
-        Intersection intersec_random = scene_intersect(randomRay, color_random, P_rand, N_rand);
-        Vector mult_color = intersec_random.S.geometry_albedo;
-        // ^^ doesnt want to do get color for some reason
 
-        final_color.data[0] += sphere.geometry_albedo.data[0] * mult_color.data[0];
-        final_color.data[1] += sphere.geometry_albedo.data[1] * mult_color.data[1];
-        final_color.data[2] += sphere.geometry_albedo.data[2] * mult_color.data[2];
+        //same as calling getColor but without the additional lighting operations
+        //can modify get color, but i dont want to add more parameters and make it uglier
+        Intersection intersec_random = scene_intersect(randomRay, P_rand, N_rand);
+        Vector mult_color = intersec_random.S->geometry_albedo;
+
+        final_color.data[0] += sphere->geometry_albedo.data[0] * mult_color.data[0];
+        final_color.data[1] += sphere->geometry_albedo.data[1] * mult_color.data[1];
+        final_color.data[2] += sphere->geometry_albedo.data[2] * mult_color.data[2];
         return final_color;
     };
 };
@@ -541,28 +529,27 @@ int main() {
     double f = 60.0;
     double alpha = 60.0;
 
-    Sphere S(Vector(-20, 0, 0), 10, Vector(255, 67, 189), false, false);
+    Sphere* S = new Sphere(Vector(-20, 0, 0), 10, Vector(255, 67, 189), true, false);
 
-    Sphere S_1(Vector(0, 0, 0), 10, Vector(255, 67, 189), false, true);
+    Sphere* S_1 = new Sphere(Vector(0, 0, 0), 10, Vector(255, 67, 189), false, true);
 
-    Sphere S_2(Vector(20, 0, 0), 10, Vector(255, 67, 189), false, true);
-    Sphere S_3(Vector(20, 0, 0), 9.5, Vector(255, 67, 189), false, true);
-    S_3.inside = true;
-
-    Sphere walls[10] = {
-        Sphere(Vector(0, 1000, 0), 940, Vector(255, 0, 255), false, false), // red wall
-        Sphere(Vector(0, 0, 1000), 940, Vector(0, 255, 0), false, false), // green wall
-        Sphere(Vector(1000, 0, 0), 940, Vector(0, 255, 255), false, false), //side left
-        Sphere(Vector(-1000, 0, 0), 940, Vector(255, 0,0), false, false), //side right
-        Sphere(Vector(0, -1000, 0), 990, Vector(0, 0, 255), false, false), // blue wall
-        Sphere(Vector(0, 0, -1000), 940, Vector(255, 255, 0), false, false), // yellow wall
+    Sphere* S_2 = new Sphere(Vector(20, 0, 0), 10, Vector(255, 67, 189), false, true);
+    Sphere* S_3 = new Sphere(Vector(20, 0, 0), 9.5, Vector(255, 67, 189), false, true);
+    S_3->inside = true;
+    std::vector<Geometry*> walls = {
+        new Sphere(Vector(0, 1000, 0), 940, Vector(255, 0, 255), false, false), // red wall
+        new Sphere(Vector(0, 0, 1000), 940, Vector(0, 255, 0), false, false), // green wall
+        new Sphere(Vector(1000, 0, 0), 940, Vector(0, 255, 255), false, false), //side left
+        new Sphere(Vector(-1000, 0, 0), 940, Vector(255, 0,0), false, false), //side right
+        new Sphere(Vector(0, -1000, 0), 990, Vector(0, 0, 255), false, false), // blue wall
+        new Sphere(Vector(0, 0, -1000), 940, Vector(255, 255, 0), false, false), // yellow wall
         S,
         S_1,
         S_2,
         S_3
     };
     TriangleIndices triangle_test();
-    Scene main_scene(walls, 10);
+    Scene main_scene(walls);
 
     Vector light_source(-10, 20, 40); // light source 
 
@@ -580,7 +567,7 @@ int main() {
 
 
             double x, y;
-            int n_rays = 100;
+            int n_rays = 10;
             double r = 0.;
             double g = 0.;
             double b = 0.;
@@ -592,13 +579,9 @@ int main() {
                 ray_direction.normalize();
                 Ray ray_camera(Q, ray_direction);
                 Vector color_inter;
-                Intersection intersec_wall = main_scene.scene_intersect(ray_camera, color_wall, P, N);
-                if (intersec_wall.intersec_mesh) {
-                    color_inter = Vector(0., 0., 0.);
-                }
-                else {
-                    color_inter = main_scene.getColor(ray_camera, 5, intersec_wall.S, P, N, ray_direction);
-                }
+                Intersection intersec_wall = main_scene.scene_intersect(ray_camera, P, N);
+
+                color_inter = main_scene.getColor(ray_camera, 5, P, N, ray_direction);
                 r += color_inter.data[0];
                 g += color_inter.data[1];
                 b += color_inter.data[2];
