@@ -636,6 +636,9 @@ public:
         else {
             if (sphere->refrac) {
                 N = (sphere->inside) ? -1 * N : N;
+                if (sphere->inside) {
+                    ray_depth += 2;
+                }
                 double n1, n2;
                 Vector N1;
                 n1 = (dot(w_i, N) > 0) ? 1.5 : 1;
